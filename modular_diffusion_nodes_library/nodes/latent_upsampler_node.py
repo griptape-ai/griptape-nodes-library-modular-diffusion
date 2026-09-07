@@ -22,9 +22,10 @@ logger = logging.getLogger("diffusers_nodes_library")
 
 class LatentUpsamplerNode(SuccessFailureExecutionMixin, SuccessFailureNode):
     START_PARAMS: ClassVar = ["provider"]
-    END_PARAMS: ClassVar = ["input_latent", "output_latent"]
+    END_PARAMS: ClassVar = ["input_latent", "output_latent", "Status"]
 
     def __init__(self, **kwargs) -> None:
+        self._initializing = True
         self.upsampler_params: BaseUpsamplerParameters | None = None
         super().__init__(**kwargs)
 
@@ -63,6 +64,7 @@ class LatentUpsamplerNode(SuccessFailureExecutionMixin, SuccessFailureNode):
             )
         )
         self._create_status_parameters()
+        self._initializing = False
 
     def set_parameter_value(
         self,
@@ -109,12 +111,22 @@ class LatentUpsamplerNode(SuccessFailureExecutionMixin, SuccessFailureNode):
         self.reorder_elements(sorted_parameters)
 
     def add_parameter(self, param: Parameter) -> None:
-        if param.name == "upsampler_model":
+        """Add a parameter to the node.
+
+        Only `upsampler_model` may be added dynamically (on a provider switch) after
+        initialization; any other post-init add is dropped. This closes off the path
+        that let a stray renamed duplicate (e.g. `upsampler_model_2`) slip through the
+        `does_name_exist` guard on a subsequent workflow load.
+        """
+        is_dynamic_param = param.name == "upsampler_model"
+        if not self._initializing and not is_dynamic_param:
+            return
+
+        if is_dynamic_param:
             param.user_defined = True
-            if self.does_name_exist("upsampler_model"):
-                return
+
         if not self.does_name_exist(param.name):
-            return super().add_parameter(param)
+            super().add_parameter(param)
 
     def remove_parameter_element_by_name(self, element_name: str) -> None:
         # HACK: `node.remove_parameter_element_by_name` does not remove connections so we need to use the retained mode request which does.  # noqa: FIX004
