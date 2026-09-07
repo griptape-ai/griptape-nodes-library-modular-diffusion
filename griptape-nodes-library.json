@@ -679,6 +679,13 @@
                                 "family": "LTX-2",
                                 "key_support": "NO_KEY_REQUIRED",
                                 "notes": "Community Diffusers conversion of Lightricks' LTX 2.3 spatial upsampler; inherits the LTX-Video Open Weights License."
+                            },
+                            "md_ltx_2_5_diffusers": {
+                                "display_name": "LTX-2.5 (Diffusers)",
+                                "provider_model_id": "Lightricks/LTX-2.5-Diffusers",
+                                "family": "LTX-2",
+                                "key_support": "NO_KEY_REQUIRED",
+                                "notes": "Gated repo on Hugging Face; requires accepting Lightricks' license and an authenticated HF token to download. Inherits the LTX-Video Open Weights License."
                             }
                         }
                     },
@@ -741,6 +748,7 @@
                             "md_ltx_2",
                             "md_ltx_2_3_diffusers",
                             "md_ltx_2_3_distilled_diffusers",
+                            "md_ltx_2_5_diffusers",
                             "md_ltx_video",
                             "md_ltx_video_0_9_7_dev",
                             "md_ltx_video_0_9_7_distilled",
@@ -972,6 +980,7 @@
                         "type": "model_usage",
                         "model_ids": [
                             "md_ltx_2_3_spatial_upsampler_diffusers",
+                            "md_ltx_2_5_diffusers",
                             "md_ltxv_spatial_upscaler_0_9_7"
                         ]
                     }

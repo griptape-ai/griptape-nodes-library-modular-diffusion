@@ -83,7 +83,7 @@ class LTX2UpsamplerParameters(BaseUpsamplerParameters):
 
     @override
     def _model_repo_id(self) -> list[str]:
-        return ["dg845/LTX-2.3-Spatial-Upsampler-Diffusers"]
+        return ["dg845/LTX-2.3-Spatial-Upsampler-Diffusers", "Lightricks/LTX-2.5-Diffusers"]
 
     @override
     def _upsample(

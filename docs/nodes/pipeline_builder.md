@@ -60,6 +60,7 @@ Enable only what you need — each option trades speed for memory.
 | Provider | Behavior |
 | --- | --- |
 | MiniMax-H3 | The **Memory optimization** knobs above are ignored. MiniMax-H3 is a Modular Diffusers pipeline whose transformer (61.7 GB in bfloat16) and Qwen3-VL conditioner (62.1 GB) cannot be placed by the post-load optimizer, so the builder loads it in bfloat16 and registers the components for automatic CPU offload instead. Expect a single 80 GB accelerator plus ample host RAM. LoRAs are not supported. |
+| LTX2 — `pipeline_type` = `LTX-2.5 Distilled` or `LTX-2.5 Full (SFT)` | Both build an `LTX2Pipeline` from the single gated `Lightricks/LTX-2.5-Diffusers` repo, differing only in which transformer checkpoint is loaded (distilled vs. full/SFT). Decoding always uses the plain VAE. The repo is gated on Hugging Face — accept the license and authenticate before it can be downloaded. |
 
 ## Tips & pitfalls
 

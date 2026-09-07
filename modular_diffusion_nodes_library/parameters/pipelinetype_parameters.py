@@ -35,6 +35,10 @@ from modular_diffusion_nodes_library.standard_parameters.hunyuan_video1_5_parame
     HunyuanVideo15PipelineParameters,
 )
 from modular_diffusion_nodes_library.standard_parameters.ltx2_parameters import LTX2PipelineParameters
+from modular_diffusion_nodes_library.standard_parameters.ltx25_parameters import (
+    LTX25DistilledPipelineParameters,
+    LTX25FullPipelineParameters,
+)
 from modular_diffusion_nodes_library.standard_parameters.ltx_parameters import (
     LTXPipelineParameters,
 )
@@ -249,13 +253,18 @@ class LatentLTX2PipelineTypeParameters(LatentPipelineTypeParameters):
         return (
             "- `LTX2Pipeline` — Text-to-video and image-to-video generation (Lightricks LTX-Video 2.x).\n\n"
             "Supports HDR output via the Decode HDR node. "
-            "Frame count must be a multiple of 8, plus 1 (e.g. 9, 17, 25, 33, 41…)."
+            "Frame count must be a multiple of 8, plus 1 (e.g. 9, 17, 25, 33, 41…).\n\n"
+            "- `LTX-2.5 Distilled` / `LTX-2.5 Full (SFT)` — Same `LTX2Pipeline`, built from the single gated "
+            "`Lightricks/LTX-2.5-Diffusers` repo. Distilled loads the `transformer` subfolder; Full (SFT) loads "
+            "`transformer_full`. Both always decode through the plain vae."
         )
 
     @classmethod
     def get_pipeline_type_dict(cls) -> dict[str, type[ModularDiffusionPipelineTypePipelineParameters]]:
         return {
             "LTX2Pipeline": LTX2PipelineParameters,
+            "LTX-2.5 Distilled": LTX25DistilledPipelineParameters,
+            "LTX-2.5 Full (SFT)": LTX25FullPipelineParameters,
         }
 
 
