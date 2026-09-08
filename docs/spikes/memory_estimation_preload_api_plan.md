@@ -103,34 +103,141 @@ in a new module (see Files below), applied as a post-multiply on the meta-comput
 `weight_bytes` for affected components. Quanto's per-group scale-factor overhead is
 ignored (negligible at GB scale) — worth a one-line comment, not a blocker.
 
-## Decision 4 — offload topology: requested vs. replicated-Automatic
+## Decision 4 — offload topology: requested value; `"Automatic"` is NOT replicated
 
 Post-load: `detect_offload_method(pipe)` — ground truth, live accelerate hooks.
 
-Pre-load, two sub-cases from `optimization_kwargs["cpu_offload_strategy"]`:
-- **`"None"` / `"Model"` / `"Sequential"` (explicit/Manual)**: use directly — exact,
-  no approximation, matches `_manual_optimize_diffusion_pipeline`
-  (`pipeline_utils.py:349-362`) one-to-one.
-- **`"Automatic"`**: `pipeline_utils.py:208-254` shows the real decision is a live
-  cascade — checks `_check_cuda_memory_sufficient`, falls back to fp8 layerwise
-  casting, then `model_cpu_offload`, then `sequential_cpu_offload` — all gated on
-  `get_free_cuda_memory()` / `get_max_memory_footprint(pipe, ...)` measured against the
-  **actually loaded** pipeline. Pre-load, we can only *replicate* this cascade using our
-  own meta-derived weight-byte estimate in place of the live one. This is the largest
-  structural source of divergence between the two API paths — see the accuracy section
-  below.
+Pre-load, resolved per conversation: **we do not attempt to replicate the `"Automatic"`
+cascade.** Rationale (from chat): the primary use case for the pre-load API is "how
+much VRAM would this need" — a user asking that question is, in practice, the same
+user who will pick a `"Manual"` strategy so the number means something concrete. Not
+worth chasing a live-VRAM-dependent decision tree we can't observe.
 
-## Decision 5 — component overrides need no new weight-file resolution logic
+Correction from initial draft: the Manual/Automatic switch is its own field,
+`optimization_kwargs["memory_optimization_strategy"]` (`huggingface_pipeline_parameter.
+py:18,29`, choices `["Manual", "Automatic"]`) — not a value of `cpu_offload_strategy`
+(whose choices are only `["None", "Model", "Sequential"]`, and which the UI hides
+entirely, `after_value_set` at `huggingface_pipeline_parameter.py:131-146`, whenever
+`memory_optimization_strategy == "Automatic"`). Dispatch on
+`optimization_kwargs["memory_optimization_strategy"]`:
+- **`"Manual"`**: use `optimization_kwargs["cpu_offload_strategy"]` directly — exact,
+  matches `_manual_optimize_diffusion_pipeline` (`pipeline_utils.py:349-362`)
+  one-to-one. `confidence = "high"` for the topology term (activation-formula
+  uncertainty still applies on top, same as the post-load path).
+- **`"Automatic"`**: treat the real topology as unknown and deliberately pick the
+  **conservative bound** — assume no offload, i.e. `peak_weight_bytes = sum of all
+  component weight_bytes` (the largest possible resident set). This matches the
+  original spike's own bias-toward-overestimate philosophy (`memory_estimation_node.md`
+  "Bias errors toward overestimating... so the tool never tells a user a config will
+  fit when it won't"): the real Automatic build can only ever reduce memory further via
+  offload, never increase it beyond this bound. Attach `confidence = "low"` and a
+  warning explaining why, recommending the user switch to Manual for a decision-grade
+  number: *"cpu_offload_strategy is 'Automatic'; the actual topology depends on free
+  VRAM at build time and cannot be predicted before loading. Showing the upper bound
+  (no offload assumed) — actual usage after building will be equal to or lower than
+  this. Set the strategy to Manual for an exact pre-load estimate."*
+
+## Decision 5 — component overrides: unify around two orthogonal axes
+
+Confirmed: override descriptors are already reachable off the artifact —
+`artifact.build_data.get("_component_overrides", {})` (a `dict[str, ComponentArtifact]`,
+same dict `ModularDiffusionPipelineTypePipelineParameters._materialize_overrides()`
+consumes, `modular_pipeline_type_parameters.py:133-136`). No new plumbing needed to
+reach them.
 
 `ComponentArtifact.try_read_config()` (`component_artifact.py:148-184`) already reads a
 component's `config.json` for `HF_REPO`, `LOCAL_DIR`, and `SINGLE_FILE` sources without
-materializing — reuse directly, no new code. For weight bytes:
-- `HF_REPO` / `LOCAL_DIR` overrides: same meta-device path as the base pipeline, fed
-  the config `try_read_config()` returns.
-- `SINGLE_FILE` overrides: `self.file_path` already points at the weight file — GGUF
-  uses file size directly (Decision 2's exception); non-GGUF single files (plain
-  `.safetensors`) can go through file size too, since there's no separate "requested
-  dtype" step for a raw single-file load beyond what's already baked into the file.
+materializing — reuse directly.
+
+Rather than branching per `source_type`, split into two orthogonal questions that
+apply uniformly to the base pipeline's components AND override components alike:
+
+1. **What are this component's *stored* resident bytes, before any dynamic
+   quantization/layerwise-casting is applied?**
+   - `HF_REPO` / `LOCAL_DIR` sources (base pipeline components, and `HF_REPO`/
+     `LOCAL_DIR` overrides): meta-device + config path (Decision 2).
+   - `SINGLE_FILE` sources (override only): the file is unsharded, so
+     `Path(file_path).stat().st_size` directly — no meta-device construction needed at
+     all, GGUF or not, since there's exactly one file and no sharding/index to resolve.
+2. **Does this component get dynamically re-quantized/layerwise-cast on top of its
+   stored bytes?**
+   - GGUF single-file overrides: **no** — `ComponentArtifact.is_quantized`
+     (`component_artifact.py:94-96`) is already `True`, and the builder explicitly
+     exempts quantized overrides from layerwise casting (`supports_layerwise_casting =
+     ... and not override_is_quantized`, `latent_diffusion_pipeline_builder_node.py:
+     172-177`). Stored bytes = final bytes, full stop.
+   - Everything else (base components, and non-GGUF overrides — plain `.safetensors`
+     single files, `HF_REPO`, `LOCAL_DIR`): **yes, if requested** — a plain-safetensors
+     override is still a normal component from `optimize_diffusion_pipeline()`'s point
+     of view, so it's still in scope for `quantization_mode` (`get_pipeline_component_
+     names(pipe)` iterates all real components, `pipeline_utils.py:153`) and, if it's
+     the transformer, for layerwise casting. Apply Decision 3's multiplier table on top
+     of the stored-bytes number, respecting the artifact's `is_prequantized` /
+     `supports_layerwise_casting` flags exactly as the live optimize step would.
+
+This means the GGUF special-case from the original Decision 2 write-up generalizes:
+it isn't "GGUF gets file size, everyone else gets meta-device" — it's "single
+unsharded files get file size (trivial either way), and only *quantized-on-disk*
+components (GGUF today) are exempt from the dynamic-quantization multiplier."
+
+## Decision 6 — output shape: structured dict is mandatory for the API; messages are node-only
+
+Confirmed in chat: the API's return value must be consumable as a dict (per-component
+breakdown + an overall total), and it must carry an explicit accuracy/confidence
+signal — honestly, since we don't yet have real-GPU calibration to quote a number
+against (same open risk as the original spike's activation-formula placeholder). The
+node's human-readable log lines are a separate, node-only concern built on top of this
+structured output — no change to that separation of responsibilities.
+
+Extend the existing dataclasses (`estimate_types.py`) rather than inventing a parallel
+dict-shaped type, and add `to_dict()` to both:
+
+```python
+@dataclass(frozen=True)
+class ComponentMemoryEstimate:
+    component_name: str
+    role: str
+    weight_bytes: int
+    activation_bytes: int
+    total_bytes: int
+    is_estimated: bool = False
+    warning: str | None = None
+
+    def to_dict(self) -> dict[str, Any]: ...   # new
+
+
+@dataclass(frozen=True)
+class PipelineMemoryEstimate:
+    pipeline_name: str
+    offload_mode: str | None
+    components: list[ComponentMemoryEstimate]
+    estimated_peak_bytes: int
+    basis: str            # new: "loaded" | "config_only"
+    confidence: str       # new: qualitative, e.g. "high" | "low" — see Decision 4
+                           # for when "low" applies (Automatic offload today; more
+                           # cases may earn it later, e.g. unregistered families)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]: ...   # new — includes a "components" list of
+                                                 # each component's to_dict(), plus a
+                                                 # top-level total (estimated_peak_bytes)
+```
+
+`confidence` is deliberately a coarse qualitative label, not a fabricated percentage —
+we don't have calibration data to justify a number (same caveat as `known gaps` #3 in
+`memory_estimation_implementation.md`). It goes `"low"` today only for the
+`"Automatic"`-offload case; `is_estimated`/`warning` on individual components already
+cover per-component caveats (e.g. an unregistered family falling back to weights-only).
+`basis` records which of the two code paths (`estimate_pipeline_memory` vs.
+`estimate_pipeline_memory_from_build_data`) produced the result, so a caller can tell
+which accuracy profile applies without re-deriving it.
+
+The node's `_process()` keeps building its log lines from these fields (unchanged
+pattern — see `pipeline_memory_estimate_node.py:111-134`), just adding a line for
+`basis`/`confidence` and surfacing `estimated_peak_bytes` and per-component
+`to_dict()` output as the node's structured result if the node framework supports a
+dict-valued output parameter (needs checking against `SuccessFailureNode` conventions
+during implementation — the log-string output stays regardless).
 
 ## How much will the two APIs differ, in theory?
 
@@ -212,27 +319,38 @@ tests/memory_estimation/
     "common case" table above, plus Automatic-offload divergence coverage
 ```
 
-## Open questions for review
+## Resolved questions (from 2026-09-08 review)
 
-1. **Should the pre-load path require weight files to be cache-resolvable too, even
-   though meta-construction technically only needs `config.json`?** Confirmed in chat:
-   yes — gate on weight presence for consistency with the "user only has access to
-   already-downloaded pipelines" framing, even though the estimate computation itself
-   doesn't strictly need it. Needs a concrete "are the weights cached" check (e.g. probe
-   for `model.safetensors` / `model.safetensors.index.json` / a single `.safetensors`
-   file via `try_to_load_from_cache`, mirroring `config_resolver.py`'s pattern) that
-   fails cleanly with a clear message if absent, rather than silently proceeding.
-2. **How faithfully should the `"Automatic"` cascade be replicated?** Options: (a) fully
-   mirror every branch in `pipeline_utils.py:208-254` including the fp8-layerwise
-   fallback order, or (b) a simplified two-bucket heuristic with an explicit low-
-   confidence flag. (a) is more accurate but doubles the surface area that has to stay
-   in sync with `pipeline_utils.py` if that logic changes later.
-3. **Node output UX**: does the node need a visible "estimate basis: loaded pipeline /
-   config-only" line, and for the latter, an "Automatic offload — treat with extra
-   caution" flag? (Recommended given the accuracy analysis above.)
-4. **Plain single-file (non-GGUF) `.safetensors` overrides** — Decision 5 proposes file
-   size for these too (no separate dtype step). Confirm this is right rather than also
-   routing them through meta-device + multiplier.
+1. **Weight-file presence gating — not needed.** No new "are weights cached" check.
+   Rationale: by the time a `DiffusionPipelineArtifact` exists with a real repo
+   selected, the model picker/build flow already implies the weights are locally
+   available (the normal build path would error upstream otherwise) — the pre-load
+   estimator doesn't need to duplicate that guarantee.
+2. **`"Automatic"` offload — not replicated.** See Decision 4: conservative upper-bound
+   (no-offload topology) plus an explicit `confidence = "low"` and warning, not a
+   cascade simulation.
+3. **Output shape — resolved as Decision 6**: dict-convertible dataclasses are
+   mandatory for the API; `basis` + `confidence` fields communicate accuracy
+   qualitatively; human-readable messages stay a node-only concern layered on top.
+4. **Overrides — resolved as Decision 5**: override descriptors are reachable via
+   `artifact.build_data["_component_overrides"]`; unified around "stored bytes" (file
+   size for single unsharded files, meta-device+config otherwise) plus "is this
+   component subject to dynamic quantization/layerwise-casting" (no for GGUF, yes
+   otherwise, same rule as base-pipeline components).
+
+## Resolved questions (round 2, 2026-09-08)
+
+5. **Node output UX — keep as-is.** The node stays log/`result_details`-only
+   (`pipeline_memory_estimate_node.py:111-141`), no new dict-valued output parameter.
+   The dict-shaped `to_dict()` output is for API callers (other nodes/code calling
+   `estimate_pipeline_memory_from_artifact()` directly), not surfaced through this
+   node's own parameters.
+6. **`confidence` stays two-valued ("high"/"low") for now**, driven solely by offload
+   strategy per Decision 4. Component-level `is_estimated`/`warning` remain purely
+   informational at the component level and do not downgrade the pipeline-level
+   `confidence` — revisit only if real usage shows that's confusing.
+
+No open questions remain. Plan is ready for implementation.
 
 ## Verification plan
 

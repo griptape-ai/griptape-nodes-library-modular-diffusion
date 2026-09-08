@@ -7,8 +7,9 @@ from griptape_nodes.exe_types.param_components.log_parameter import LogParameter
 
 from modular_diffusion_nodes_library.artifact_utils.latent_artifact import LatentArtifact
 from modular_diffusion_nodes_library.artifact_utils.pipeline_artifact import normalize_diffusion_pipeline_value
-from modular_diffusion_nodes_library.memory_estimation.pipeline_memory_estimator import estimate_pipeline_memory
-from modular_diffusion_nodes_library.utils.huggingface_utils import model_cache
+from modular_diffusion_nodes_library.memory_estimation.pipeline_memory_estimator import (
+    estimate_pipeline_memory_from_artifact,
+)
 from modular_diffusion_nodes_library.utils.torch_utils import to_human_readable_size
 
 logger = logging.getLogger("modular_diffusers_nodes_library")
@@ -23,9 +24,9 @@ class PipelineMemoryEstimateNode(SuccessFailureNode):
                 name="pipeline",
                 type="Pipeline Config",
                 tooltip=(
-                    "Loaded diffusion pipeline to estimate. Connect from Pipeline Builder. The pipeline must "
-                    "already be built/loaded (e.g. after a Generate Latent node has run) -- this node never "
-                    "triggers a pipeline build."
+                    "Diffusion pipeline to estimate. Connect from Pipeline Builder. This node never triggers a "
+                    "pipeline build: if the pipeline is already loaded (e.g. after a Generate Latent node has "
+                    "run), the estimate is exact; otherwise it's derived from the pipeline's config alone."
                 ),
                 allowed_modes={ParameterMode.INPUT},
             )
@@ -85,22 +86,8 @@ class PipelineMemoryEstimateNode(SuccessFailureNode):
             self._set_status_results(was_successful=False, result_details="Missing required 'latent' input.")
             return
 
-        if not model_cache.has_pipeline(pipeline_artifact.config_hash):
-            self._set_status_results(
-                was_successful=False,
-                result_details=(
-                    "Pipeline is not currently loaded. Run it through a Generate Latent node or the "
-                    "Pipeline Builder first -- this node never triggers a pipeline build."
-                ),
-            )
-            return
-
-        pipe = model_cache.get_pipeline(pipeline_artifact.config_hash)
-
         try:
-            estimate = estimate_pipeline_memory(
-                pipe, latent_artifact, pipeline_artifact.optimization_kwargs, pipeline_artifact.pipeline_name
-            )
+            estimate = estimate_pipeline_memory_from_artifact(pipeline_artifact, latent_artifact)
         except Exception as e:
             logger.exception("%s: Pipeline memory estimation failed", self.name)
             self.log_params.append_to_logs("Memory estimation failed.\n")
@@ -108,8 +95,10 @@ class PipelineMemoryEstimateNode(SuccessFailureNode):
             self._handle_failure_exception(e)
             return
 
+        basis_description = "loaded pipeline, exact weights" if estimate.basis == "loaded" else "config only, pre-load"
         self.log_params.append_to_logs(
             f"Pipeline: {estimate.pipeline_name} (offload={estimate.offload_mode or 'none'})\n"
+            f"Estimate basis: {basis_description} (confidence={estimate.confidence})\n"
         )
         sum_of_components = 0
         for component in estimate.components:
@@ -137,6 +126,7 @@ class PipelineMemoryEstimateNode(SuccessFailureNode):
             was_successful=True,
             result_details=(
                 f"Estimated peak: {to_human_readable_size(estimate.estimated_peak_bytes)} "
-                f"across {len(estimate.components)} components."
+                f"across {len(estimate.components)} components ({basis_description}, "
+                f"confidence={estimate.confidence})."
             ),
         )
