@@ -221,7 +221,9 @@ class NoiseLatentNode(ParameterConnectionPreservationMixin, ControlNode):
         width = self.get_parameter_value("width")
         seed = self.get_parameter_value("seed") or 0
         generator_state = GeneratorState.from_seed(seed)
-        num_frames = self.get_parameter_value("num_frames") or None
+        num_frames = None
+        if latent_pipeline_driver.produces_video:
+            num_frames = self.get_parameter_value("num_frames") or None
 
         result = snap_dimensions(latent_pipeline_driver, height, width, num_frames)
         if result.message:

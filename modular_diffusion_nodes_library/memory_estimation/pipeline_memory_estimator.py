@@ -109,7 +109,6 @@ def _estimate_denoiser_activation_bytes(
                 height_latent,
                 width_latent,
                 fields.hidden_dim,
-                fields.num_layers,
                 fields.patch_size_spatial,
                 element_size,
             )
@@ -121,7 +120,6 @@ def _estimate_denoiser_activation_bytes(
             height_latent,
             width_latent,
             fields.hidden_dim,
-            fields.num_layers,
             fields.patch_size_spatial,
             fields.patch_size_temporal,
             element_size,
