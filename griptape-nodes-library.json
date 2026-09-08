@@ -989,6 +989,16 @@
             }
         },
         {
+            "class_name": "PipelineMemoryEstimateNode",
+            "file_path": "./modular_diffusion_nodes_library/nodes/pipeline_memory_estimate_node.py",
+            "metadata": {
+                "category": "ModularDiffusion/Pipeline",
+                "description": "Estimates per-component GPU memory usage (weights + activations) for an already-loaded diffusion pipeline, given a latent shape. Does not run the pipeline.",
+                "display_name": "Estimate Pipeline Memory",
+                "group": "diffusion"
+            }
+        },
+        {
             "class_name": "LoadLora",
             "file_path": "./modular_diffusion_nodes_library/nodes/load_lora_node.py",
             "metadata": {
